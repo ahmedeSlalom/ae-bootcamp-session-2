@@ -16,22 +16,18 @@ const db = new Database(':memory:');
 
 // Create tables
 db.exec(`
-  CREATE TABLE IF NOT EXISTS items (
+  CREATE TABLE IF NOT EXISTS todos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    due_date TEXT,
+    priority TEXT DEFAULT 'medium',
+    completed INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )
 `);
 
-// Insert some initial data
-const initialItems = ['Item 1', 'Item 2', 'Item 3'];
-const insertStmt = db.prepare('INSERT INTO items (name) VALUES (?)');
-
-initialItems.forEach(item => {
-  insertStmt.run(item);
-});
-
-console.log('In-memory database initialized with sample data');
+console.log('In-memory database initialized');
 
 // Health check endpoint
 app.get('/', (req, res) => {
@@ -39,60 +35,121 @@ app.get('/', (req, res) => {
 });
 
 // API Routes
-app.get('/api/items', (req, res) => {
+
+app.get('/api/todos', (req, res) => {
   try {
-    const items = db.prepare('SELECT * FROM items ORDER BY created_at DESC').all();
-    res.json(items);
+    const todos = db.prepare(
+      'SELECT * FROM todos ORDER BY due_date ASC NULLS LAST, created_at ASC'
+    ).all();
+    res.json(todos);
   } catch (error) {
-    console.error('Error fetching items:', error);
-    res.status(500).json({ error: 'Failed to fetch items' });
+    console.error('Error fetching todos:', error);
+    res.status(500).json({ error: 'Failed to fetch todos' });
   }
 });
 
-app.post('/api/items', (req, res) => {
+app.post('/api/todos', (req, res) => {
   try {
-    const { name } = req.body;
+    const { title, description, due_date, priority } = req.body;
 
-    if (!name || typeof name !== 'string' || name.trim() === '') {
-      return res.status(400).json({ error: 'Item name is required' });
+    if (!title || typeof title !== 'string' || title.trim() === '') {
+      return res.status(400).json({ error: 'Todo title is required' });
     }
 
-    const result = insertStmt.run(name);
-    const id = result.lastInsertRowid;
+    const allowedPriorities = ['low', 'medium', 'high'];
+    const resolvedPriority = allowedPriorities.includes(priority) ? priority : 'medium';
 
-    const newItem = db.prepare('SELECT * FROM items WHERE id = ?').get(id);
-    res.status(201).json(newItem);
+    const stmt = db.prepare(
+      'INSERT INTO todos (title, description, due_date, priority) VALUES (?, ?, ?, ?)'
+    );
+    const result = stmt.run(title.trim(), description || null, due_date || null, resolvedPriority);
+
+    const newTodo = db.prepare('SELECT * FROM todos WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json(newTodo);
   } catch (error) {
-    console.error('Error creating item:', error);
-    res.status(500).json({ error: 'Failed to create item' });
+    console.error('Error creating todo:', error);
+    res.status(500).json({ error: 'Failed to create todo' });
   }
 });
 
-app.delete('/api/items/:id', (req, res) => {
+// DELETE completed must be registered before /:id to avoid route shadowing
+app.delete('/api/todos/completed', (req, res) => {
+  try {
+    const result = db.prepare('DELETE FROM todos WHERE completed = 1').run();
+    res.json({ message: 'Completed todos cleared', count: result.changes });
+  } catch (error) {
+    console.error('Error clearing completed todos:', error);
+    res.status(500).json({ error: 'Failed to clear completed todos' });
+  }
+});
+
+app.put('/api/todos/:id', (req, res) => {
   try {
     const { id } = req.params;
 
     if (!id || isNaN(parseInt(id))) {
-      return res.status(400).json({ error: 'Valid item ID is required' });
+      return res.status(400).json({ error: 'Valid todo ID is required' });
     }
 
-    const existingItem = db.prepare('SELECT * FROM items WHERE id = ?').get(id);
-    if (!existingItem) {
-      return res.status(404).json({ error: 'Item not found' });
+    const existing = db.prepare('SELECT * FROM todos WHERE id = ?').get(id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Todo not found' });
     }
 
-    const deleteStmt = db.prepare('DELETE FROM items WHERE id = ?');
-    const result = deleteStmt.run(id);
+    const { title, description, due_date, priority, completed } = req.body;
 
-    if (result.changes > 0) {
-      res.json({ message: 'Item deleted successfully', id: parseInt(id) });
-    } else {
-      res.status(404).json({ error: 'Item not found' });
+    if (title !== undefined && (typeof title !== 'string' || title.trim() === '')) {
+      return res.status(400).json({ error: 'Todo title cannot be empty' });
     }
+
+    const allowedPriorities = ['low', 'medium', 'high'];
+    const resolvedTitle = title !== undefined ? title.trim() : existing.title;
+    const resolvedDescription = description !== undefined ? description : existing.description;
+    const resolvedDueDate = due_date !== undefined ? due_date : existing.due_date;
+    const resolvedPriority =
+      priority !== undefined && allowedPriorities.includes(priority)
+        ? priority
+        : existing.priority;
+    const resolvedCompleted = completed !== undefined ? (completed ? 1 : 0) : existing.completed;
+
+    db.prepare(
+      `UPDATE todos
+       SET title = ?, description = ?, due_date = ?, priority = ?, completed = ?
+       WHERE id = ?`
+    ).run(resolvedTitle, resolvedDescription, resolvedDueDate, resolvedPriority, resolvedCompleted, id);
+
+    const updated = db.prepare('SELECT * FROM todos WHERE id = ?').get(id);
+    res.json(updated);
   } catch (error) {
-    console.error('Error deleting item:', error);
-    res.status(500).json({ error: 'Failed to delete item' });
+    console.error('Error updating todo:', error);
+    res.status(500).json({ error: 'Failed to update todo' });
   }
 });
 
-module.exports = { app, db, insertStmt };
+app.delete('/api/todos/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id || isNaN(parseInt(id))) {
+      return res.status(400).json({ error: 'Valid todo ID is required' });
+    }
+
+    const existing = db.prepare('SELECT * FROM todos WHERE id = ?').get(id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Todo not found' });
+    }
+
+    const result = db.prepare('DELETE FROM todos WHERE id = ?').run(id);
+
+    if (result.changes > 0) {
+      res.json({ message: 'Todo deleted successfully', id: parseInt(id) });
+    } else {
+      res.status(404).json({ error: 'Todo not found' });
+    }
+  } catch (error) {
+    console.error('Error deleting todo:', error);
+    res.status(500).json({ error: 'Failed to delete todo' });
+  }
+});
+
+module.exports = { app, db };
