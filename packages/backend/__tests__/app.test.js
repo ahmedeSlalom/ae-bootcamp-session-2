@@ -41,17 +41,18 @@ describe('GET /api/todos', () => {
   });
 
   it('should return todos with the expected fields', async () => {
-    await createTodo({ title: 'Field check todo' });
+    await createTodo({ title: 'Field check todo', description: 'A desc', due_date: '2026-12-01', priority: 'high' });
     const response = await request(app).get('/api/todos');
     expect(response.status).toBe(200);
     const todo = response.body[0];
-    expect(todo).toHaveProperty('id');
-    expect(todo).toHaveProperty('title');
+    expect(typeof todo.id).toBe('number');
+    expect(typeof todo.title).toBe('string');
+    expect(todo.title).toBeTruthy();
     expect(todo).toHaveProperty('description');
     expect(todo).toHaveProperty('due_date');
-    expect(todo).toHaveProperty('priority');
-    expect(todo).toHaveProperty('completed');
-    expect(todo).toHaveProperty('created_at');
+    expect(['low', 'medium', 'high']).toContain(todo.priority);
+    expect([0, 1]).toContain(todo.completed);
+    expect(typeof todo.created_at).toBe('string');
   });
 });
 
@@ -114,6 +115,17 @@ describe('POST /api/todos', () => {
       .set('Accept', 'application/json');
 
     expect(response.status).toBe(400);
+    expect(response.body).toHaveProperty('error');
+  });
+
+  it('should trim whitespace from the title', async () => {
+    const response = await request(app)
+      .post('/api/todos')
+      .send({ title: '  Buy milk  ' })
+      .set('Accept', 'application/json');
+
+    expect(response.status).toBe(201);
+    expect(response.body.title).toBe('Buy milk');
   });
 });
 
@@ -161,6 +173,28 @@ describe('PUT /api/todos/:id', () => {
     expect(response.status).toBe(404);
   });
 
+  it('should preserve existing priority when an invalid value is sent on update', async () => {
+    const todo = await createTodo({ title: 'Priority guard', priority: 'high' });
+    const response = await request(app)
+      .put(`/api/todos/${todo.id}`)
+      .send({ priority: 'urgent' })
+      .set('Accept', 'application/json');
+
+    expect(response.status).toBe(200);
+    expect(response.body.priority).toBe('high');
+  });
+
+  it('should trim whitespace from the title on update', async () => {
+    const todo = await createTodo({ title: 'Original' });
+    const response = await request(app)
+      .put(`/api/todos/${todo.id}`)
+      .send({ title: '  Padded title  ' })
+      .set('Accept', 'application/json');
+
+    expect(response.status).toBe(200);
+    expect(response.body.title).toBe('Padded title');
+  });
+
   it('should return 400 if title is set to blank', async () => {
     const todo = await createTodo({ title: 'Original' });
     const response = await request(app)
@@ -177,10 +211,12 @@ describe('DELETE /api/todos/completed', () => {
     const todo1 = await createTodo({ title: 'Done task' });
     await createTodo({ title: 'Active task' });
 
-    // Mark todo1 as completed
-    await request(app)
+    // Mark todo1 as completed — assert the PUT succeeds so a failure here is obvious
+    const markDone = await request(app)
       .put(`/api/todos/${todo1.id}`)
       .send({ completed: true });
+    expect(markDone.status).toBe(200);
+    expect(markDone.body.completed).toBe(1);
 
     const response = await request(app).delete('/api/todos/completed');
     expect(response.status).toBe(200);

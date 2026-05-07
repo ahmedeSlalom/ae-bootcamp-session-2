@@ -35,16 +35,24 @@ const server = setupServer(
     const { id } = req.params;
     const existing = TODOS.find(t => t.id === parseInt(id));
     if (!existing) return res(ctx.status(404), ctx.json({ error: 'Not found' }));
-    return res(ctx.status(200), ctx.json({ ...existing, ...req.body }));
+    const updates = { ...req.body };
+    // Mirror real server: coerce completed boolean → integer
+    if (updates.completed !== undefined) {
+      updates.completed = updates.completed ? 1 : 0;
+    }
+    return res(ctx.status(200), ctx.json({ ...existing, ...updates }));
+  }),
+
+  // NOTE: /completed must be registered BEFORE /:id to prevent the wildcard catching it
+  rest.delete('/api/todos/completed', (req, res, ctx) => {
+    return res(ctx.status(200), ctx.json({ message: 'Completed todos cleared', count: 1 }));
   }),
 
   rest.delete('/api/todos/:id', (req, res, ctx) => {
     const { id } = req.params;
-    return res(ctx.status(200), ctx.json({ message: 'Deleted', id: parseInt(id) }));
-  }),
-
-  rest.delete('/api/todos/completed', (req, res, ctx) => {
-    return res(ctx.status(200), ctx.json({ message: 'Cleared', count: 1 }));
+    const exists = TODOS.find(t => t.id === parseInt(id));
+    if (!exists) return res(ctx.status(404), ctx.json({ error: 'Todo not found' }));
+    return res(ctx.status(200), ctx.json({ message: 'Todo deleted successfully', id: parseInt(id) }));
   })
 );
 
@@ -106,19 +114,15 @@ describe('App Component', () => {
   test('toggles a todo as completed', async () => {
     const user = userEvent.setup();
 
-    server.use(
-      rest.put('/api/todos/1', (req, res, ctx) => {
-        return res(ctx.status(200), ctx.json({ ...TODOS[0], completed: 1 }));
-      })
-    );
-
     await act(async () => {
       render(<App />);
     });
 
     await waitFor(() => expect(screen.getByText('Buy milk')).toBeInTheDocument());
 
-    const [checkbox] = screen.getAllByRole('checkbox');
+    // Target the specific todo's list item to avoid position-based fragility
+    const buyMilkItem = screen.getByText('Buy milk').closest('li');
+    const checkbox = within(buyMilkItem).getByRole('checkbox');
     await act(async () => {
       await user.click(checkbox);
     });
@@ -195,12 +199,6 @@ describe('App Component', () => {
   test('clears all completed todos', async () => {
     const user = userEvent.setup();
 
-    server.use(
-      rest.delete('/api/todos/completed', (req, res, ctx) => {
-        return res(ctx.status(200), ctx.json({ count: 1 }));
-      })
-    );
-
     await act(async () => {
       render(<App />);
     });
@@ -246,6 +244,86 @@ describe('App Component', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/No tasks/i)).toBeInTheDocument();
+    });
+  });
+
+  test('opens edit dialog, changes title, and saves', async () => {
+    const user = userEvent.setup();
+
+    await act(async () => {
+      render(<App />);
+    });
+
+    await waitFor(() => expect(screen.getByText('Buy milk')).toBeInTheDocument());
+
+    const editButton = screen.getByLabelText(/Edit "Buy milk"/i);
+    await act(async () => {
+      await user.click(editButton);
+    });
+
+    // Dialog should be open with the existing title pre-filled
+    const titleField = document.getElementById('edit-title-field');
+    await waitFor(() => expect(titleField).toBeInTheDocument());
+    expect(titleField).toHaveValue('Buy milk');
+
+    await user.clear(titleField);
+    await user.type(titleField, 'Buy oat milk');
+
+    const saveButton = screen.getByRole('button', { name: /save/i });
+    await act(async () => {
+      await user.click(saveButton);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Buy oat milk')).toBeInTheDocument();
+      expect(screen.queryByText('Buy milk')).not.toBeInTheDocument();
+    });
+  });
+
+  test('shows overdue styling for a past due date on an active todo', async () => {
+    server.use(
+      rest.get('/api/todos', (req, res, ctx) => {
+        return res(ctx.status(200), ctx.json([
+          { id: 1, title: 'Overdue task', description: '', due_date: '2020-01-01', priority: 'medium', completed: 0, created_at: '2020-01-01T00:00:00.000Z' },
+        ]));
+      })
+    );
+
+    await act(async () => {
+      render(<App />);
+    });
+
+    await waitFor(() => expect(screen.getByText('Overdue task')).toBeInTheDocument());
+
+    const dueLabel = screen.getByLabelText(/due date:.*overdue/i);
+    expect(dueLabel).toBeInTheDocument();
+  });
+
+  test('shows an error alert when adding a todo fails', async () => {
+    const user = userEvent.setup();
+
+    server.use(
+      rest.post('/api/todos', (req, res, ctx) => {
+        return res(ctx.status(500));
+      })
+    );
+
+    await act(async () => {
+      render(<App />);
+    });
+
+    await waitFor(() => expect(screen.queryByRole('progressbar')).not.toBeInTheDocument());
+
+    const titleInput = screen.getByRole('textbox', { name: /^title/i });
+    await user.type(titleInput, 'Will fail');
+
+    const addButton = screen.getByRole('button', { name: /add task/i });
+    await act(async () => {
+      await user.click(addButton);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeInTheDocument();
     });
   });
 });

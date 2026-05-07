@@ -331,6 +331,7 @@ function App() {
               onChange={e => setEditTitle(e.target.value)}
               required
               fullWidth
+              id="edit-title-field"
             />
             <TextField
               label="Description"
